@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>Stock Visualizer</title>
+  <link href="style.css" rel="stylesheet" type="text/css" />
+  <script src="script.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body> 
+  <h1>Interactive Stock Visualizer</h1>
+
+  <div class="controls">
+    <input id="stockSymbol" placeholder="Enter stock symbol(s) e.g. AAPL, TSLA, MSFT" size="40" />
+    <select id="interval">
+      <option value="1min">1min</option>
+      <option value="5min" selected>5min</option>
+      <option value="15min">15min</option>
+      <option value="30min">30min</option>
+      <option value="60min">60min</option>
+      <option value="daily">Daily</option>
+    </select>
+    <button id="fetchData">Get Data</button>
+  </div>
+
+  <!-- Chart -->
+  <canvas id="stockChart" width="900" height="450"></canvas>
+  <div id="output"></div>
+  <!-- Auto refresh -->
+  <div id="refreshInfo"></div>
+
+  <script>
+
+    let chart; // Storing the Chart.js instance here
+    let refreshTimer; //timer ID used to automatically refresh the data every few minutes
+
+    const apiKey = "J6K2Z61TYN6K7ZMV"; // Alpha Vantage API key
+
+    // Waits for the user to click the button with ID
+    document.getElementById("fetchData").addEventListener("click", () => {
+      clearInterval(refreshTimer); // stop previous auto-refresh
+      fetchAndRenderData(); // fetch fresh stock data and draw the chart
+    });
+
+    async function fetchAndRenderData() { //await network requests
+      //reads stock symbol entered by user
+      const symbolsInput = document.getElementById("stockSymbol").value.trim().toUpperCase();
+      const interval = document.getElementById("interval").value;
+      const output = document.getElementById("output");
+      const ctx = document.getElementById("stockChart").getContext("2d");
+      const refreshInfo = document.getElementById("refreshInfo");
+
+      //Stops the function if the input is empty
+      if (!symbolsInput) {
+        output.innerHTML = "<span class='error'>⚠️ Please enter at least one stock symbol.</span>";
+        return;
+      }
+
+      //Splits the input by commas so multiple symbols can be fetched at once
+      const symbols = symbolsInput.split(",").map(s => s.trim()).filter(Boolean);
+      if (symbols.length === 0) {
+        output.innerHTML = "<span class='error'>⚠️ Invalid input. Please enter valid symbols separated by commas.</span>";
+        return;
+      }
+
+      output.textContent = "Fetching data...";
+      output.className = "";
+
+      //Builds the correct API URL depending on the interval type
+      const promises = symbols.map(async symbol => {
+        let functionType = interval === "daily" ? "TIME_SERIES_DAILY" : "TIME_SERIES_INTRADAY"; // The data it is getting from Alpha Vantage 
+        let url = `https://www.alphavantage.co/query?function=${functionType}&symbol=${symbol}&apikey=${apiKey}`; // Alpha Vantage API
+        if (interval !== "daily") url += `&interval=${interval}`;
+
+        //Fetch Stock data
+        //Fetches JSON data from Alpha Vantage
+        try {
+          const response = await fetch(url); //Class code
+          const data = await response.json();  //Class code
+          const key = interval === "daily" ? "Time Series (Daily)" : `Time Series (${interval})`;  //Finds the correct key in the JSON response
+
+          //Checks if data exists. If not, shows there is an error
+          if (!data[key]) throw new Error(data["Note"] || data["Error Message"] || "No data found");
+
+          const timeSeries = data[key]; 
+          const times = Object.keys(timeSeries).reverse().slice(-50); //Extracts the most recent 50 timestamps
+          const closePrices = times.map(t => parseFloat(timeSeries[t]["4. close"]));
+
+          return { symbol, times, closePrices };
+        } catch (err) {
+          console.error(`${symbol} error:`, err);
+          return { symbol, error: true };
+        }
+      });
+
+      const results = await Promise.all(promises); //Waits for all stock requests to finish
+      //Separates successful from failed ones
+      const validResults = results.filter(r => !r.error);
+      const invalidResults = results.filter(r => r.error);
+
+      //Error message
+      if (validResults.length === 0) {
+        output.innerHTML = "<span class='error'>❌ No valid data found. Check your symbols or API usage limit.</span>";
+        return;
+      }
+
+      //Stock data chart
+      // Create or update chart
+      // ChatGPT helped me create a chart to help visualize the stcok data and compare them in a chart.
+      if (chart) chart.destroy(); // destroy old chart before drawing a new one
+
+      //Creates one colored line dataset per stock symbol
+      const datasets = validResults.map((r, i) => ({
+        label: r.symbol,
+        data: r.closePrices,
+        borderColor: getColor(i), //give each line a unique color
+        backgroundColor: getColor(i, 0.2),
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+        pointHoverRadius: 6,
+      }));
+
+      //chart.js
+      //Creates the interactive chart
+      //
+      chart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: validResults[0].times,
+          datasets: datasets
+        },
+        options: {
+          responsive: true,
+          interaction: {
+            mode: 'nearest',
+            intersect: false
+          },
+          //Adds tooltips, labels, and a dynamic title
+          plugins: {
+            legend: { display: true },
+            title: { display: true, text: `Stock Prices (${interval})` },
+            tooltip: {
+            enabled: true,
+            mode: 'index',
+            intersect: false,
+              
+            callbacks: {
+                label: (context) => {
+                  const value = context.parsed.y;
+                  return `${context.dataset.label}: $${value.toFixed(2)}`;
+                }
+              }
+            }
+          },
+          //The chart will show stock price over time
+          scales: {
+            x: { display: true, title: { display: true, text: "Time" } },
+            y: { beginAtZero: false, title: { display: true, text: "Price (USD)" } }
+          }
+        }
+      });
+
+      if (invalidResults.length > 0) {
+        output.innerHTML = `<span class='error'>⚠️ No data for: ${invalidResults.map(r => r.symbol).join(", ")}.</span>`;
+      } else {
+        output.innerHTML = `<span class='success'>✅ Loaded: ${validResults.map(r => r.symbol).join(", ")}.</span>`;
+      }
+
+      // Code from ChatGPT to add a hover tooltip to the graph 
+      // Show last refresh time
+      const now = new Date();
+      refreshInfo.textContent = `Last updated: ${now.toLocaleTimeString()}`;
+      // Auto refresh every 3 minutes
+      refreshTimer = setInterval(fetchAndRenderData, 3 * 60 * 1000);
+    }
+
+    // Helper for colors
+   // Gives each line a distinct color with adjustable transparency
+    function getColor(index, alpha = 1) {
+      const colors = [
+        `rgba(59, 130, 246, ${alpha})`,  // Blue
+        `rgba(16, 185, 129, ${alpha})`,  // Green
+        `rgba(239, 68, 68, ${alpha})`,   // Red
+        `rgba(245, 158, 11, ${alpha})`,  // Amber
+        `rgba(139, 92, 246, ${alpha})`,  // Purple
+        `rgba(236, 72, 153, ${alpha})`   // Pink
+      ];
+      return colors[index % colors.length];
+    }
+
+  </script>
+
+
+
+
+
+</body>
+</html>
